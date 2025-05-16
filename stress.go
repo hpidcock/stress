@@ -31,13 +31,14 @@ import (
 )
 
 var (
-	flagCount   = flag.Int("count", 0, "stop after `N` runs (default never stop)")
-	flagFailure = flag.String("failure", "", "fail only if output matches `regexp`")
-	flagIgnore  = flag.String("ignore", "", "ignore failure if output matches `regexp`")
-	flagKill    = flag.Bool("kill", true, "kill timed out processes if true, otherwise just print pid (to attach with gdb)")
-	flagOutput  = flag.String("o", defaultPrefix(), "output failure logs to `path` plus a unique suffix")
-	flagP       = flag.Int("p", runtime.NumCPU(), "run `N` processes in parallel")
-	flagTimeout = flag.Duration("timeout", 10*time.Minute, "timeout each process after `duration`")
+	flagCount    = flag.Int("count", 0, "stop after `N` runs (default never stop)")
+	flagDuration = flag.Duration("duration", 0, "minimum duration of stress (count is ignored until this duration)")
+	flagFailure  = flag.String("failure", "", "fail only if output matches `regexp`")
+	flagIgnore   = flag.String("ignore", "", "ignore failure if output matches `regexp`")
+	flagKill     = flag.Bool("kill", true, "kill timed out processes if true, otherwise just print pid (to attach with gdb)")
+	flagOutput   = flag.String("o", defaultPrefix(), "output failure logs to `path` plus a unique suffix")
+	flagP        = flag.Int("p", runtime.NumCPU(), "run `N` processes in parallel")
+	flagTimeout  = flag.Duration("timeout", 10*time.Minute, "timeout each process after `duration`")
 )
 
 func init() {
@@ -81,7 +82,7 @@ func main() {
 	}
 	res := make(chan []byte)
 	var started atomic.Int64
-	for i := 0; i < *flagP; i++ {
+	for range *flagP {
 		go func() {
 			for {
 				// Note: Must started.Add(1) even if not using -count,
@@ -140,7 +141,9 @@ func main() {
 		}
 		var active string
 		n := started.Load() - int64(runs)
-		if *flagCount > 0 {
+		if *flagDuration != 0 && time.Since(start) < *flagDuration {
+			// minimum duration not yet met
+		} else if *flagCount > 0 {
 			// started counts past *flagCount at end; do not count those
 			// TODO: n = min(n, int64(*flagCount-runs))
 			if x := int64(*flagCount - runs); n > x {
@@ -173,7 +176,9 @@ func main() {
 					fmt.Printf("\n%s\n%s\n", f.Name(), out)
 				}
 			}
-			if *flagCount > 0 && runs >= *flagCount {
+			if *flagDuration != 0 && time.Since(start) < *flagDuration {
+				continue
+			} else if *flagCount > 0 && runs >= *flagCount {
 				status("total")
 				if fails > 0 {
 					os.Exit(1)
