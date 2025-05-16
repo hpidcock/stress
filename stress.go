@@ -34,6 +34,7 @@ var (
 	flagCount    = flag.Int("count", 0, "stop after `N` runs (default never stop)")
 	flagDuration = flag.Duration("duration", 0, "minimum duration of stress (count is ignored until this duration)")
 	flagFailure  = flag.String("failure", "", "fail only if output matches `regexp`")
+	flagFast     = flag.Bool("fast", false, "fail fast on first error")
 	flagIgnore   = flag.String("ignore", "", "ignore failure if output matches `regexp`")
 	flagKill     = flag.Bool("kill", true, "kill timed out processes if true, otherwise just print pid (to attach with gdb)")
 	flagOutput   = flag.String("o", defaultPrefix(), "output failure logs to `path` plus a unique suffix")
@@ -175,6 +176,10 @@ func main() {
 				} else {
 					fmt.Printf("\n%s\n%s\n", f.Name(), out)
 				}
+			}
+			if *flagFast && fails > 0 {
+				status("total")
+				os.Exit(1)
 			}
 			if *flagDuration != 0 && time.Since(start) < *flagDuration {
 				continue
