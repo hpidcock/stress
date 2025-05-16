@@ -25,6 +25,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -82,13 +83,19 @@ func main() {
 		}
 	}
 	res := make(chan []byte)
+	start := time.Now()
 	var started atomic.Int64
+	var wg sync.WaitGroup
+	dying := make(chan struct{})
 	for range *flagP {
+		wg.Add(1)
 		go func() {
+			defer wg.Done()
 			for {
+				passedMinDuration := time.Since(start) > *flagDuration
 				// Note: Must started.Add(1) even if not using -count,
 				// because it enables the '%d active' print below.
-				if started.Add(1) > int64(*flagCount) && *flagCount > 0 {
+				if started.Add(1) > int64(*flagCount) && *flagCount > 0 && passedMinDuration {
 					break
 				}
 				cmd := exec.Command(flag.Args()[0], flag.Args()[1:]...)
@@ -103,6 +110,7 @@ func main() {
 						case <-done:
 							return
 						case <-time.After(*flagTimeout):
+						case <-dying:
 						}
 						if !*flagKill {
 							fmt.Printf("process %v timed out\n", cmd.Process.Pid)
@@ -132,7 +140,6 @@ func main() {
 		}()
 	}
 	runs, fails := 0, 0
-	start := time.Now()
 	ticker := time.NewTicker(5 * time.Second).C
 	status := func(context string) {
 		elapsed := time.Since(start).Truncate(time.Second)
@@ -142,9 +149,7 @@ func main() {
 		}
 		var active string
 		n := started.Load() - int64(runs)
-		if *flagDuration != 0 && time.Since(start) < *flagDuration {
-			// minimum duration not yet met
-		} else if *flagCount > 0 {
+		if *flagDuration == 0 && *flagCount > 0 {
 			// started counts past *flagCount at end; do not count those
 			// TODO: n = min(n, int64(*flagCount-runs))
 			if x := int64(*flagCount - runs); n > x {
@@ -156,34 +161,55 @@ func main() {
 		}
 		fmt.Printf("%v: %v runs %s, %v failures%s%s\n", elapsed, runs, context, fails, pct, active)
 	}
+	runResult := func(out []byte, ignoreErr bool) {
+		runs++
+		if !ignoreErr && len(out) > 0 {
+			fails++
+			dir, path := filepath.Split(*flagOutput)
+			f, err := os.CreateTemp(dir, path)
+			if err != nil {
+				fmt.Printf("failed to create temp file: %v\n", err)
+				os.Exit(1)
+			}
+			f.Write(out)
+			f.Close()
+			if len(out) > 2<<10 {
+				out := out[:2<<10]
+				fmt.Printf("\n%s\n%s\n…\n", f.Name(), out)
+			} else {
+				fmt.Printf("\n%s\n%s\n", f.Name(), out)
+			}
+		}
+	}
+	waitExit := func() {
+		dead := make(chan struct{})
+		go func() {
+			defer close(dead)
+			wg.Wait()
+		}()
+		close(dying)
+		for {
+			select {
+			case out := <-res:
+				runResult(out, true)
+			case <-dead:
+				return
+			}
+		}
+	}
 	for {
 		select {
 		case out := <-res:
-			runs++
-			if len(out) > 0 {
-				fails++
-				dir, path := filepath.Split(*flagOutput)
-				f, err := os.CreateTemp(dir, path)
-				if err != nil {
-					fmt.Printf("failed to create temp file: %v\n", err)
-					os.Exit(1)
-				}
-				f.Write(out)
-				f.Close()
-				if len(out) > 2<<10 {
-					out := out[:2<<10]
-					fmt.Printf("\n%s\n%s\n…\n", f.Name(), out)
-				} else {
-					fmt.Printf("\n%s\n%s\n", f.Name(), out)
-				}
-			}
+			runResult(out, false)
 			if *flagFast && fails > 0 {
+				waitExit()
 				status("total")
 				os.Exit(1)
 			}
 			if *flagDuration != 0 && time.Since(start) < *flagDuration {
 				continue
 			} else if *flagCount > 0 && runs >= *flagCount {
+				waitExit()
 				status("total")
 				if fails > 0 {
 					os.Exit(1)
